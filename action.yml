@@ -23,6 +23,11 @@ inputs:
     required: false
     default: 'tools platform-tools'
 
+  cache:
+    description: 'Enable caching of Android SDK packages and command-line tools'
+    required: false
+    default: 'false'
+
 runs:
   using: node20
   main: 'dist/index.js'

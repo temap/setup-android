@@ -1,9 +1,11 @@
 import * as core from '@actions/core'
 import * as tc from '@actions/tool-cache'
 import * as exec from '@actions/exec'
+import * as cache from '@actions/cache'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
+import * as crypto from 'crypto'
 
 function getVersionShort(versionLong: string): string {
   switch (versionLong) {
@@ -133,6 +135,86 @@ async function installSdkManager(): Promise<string> {
   return sdkManagerExe
 }
 
+async function restoreCache(
+  cmdlineToolsVersion: string,
+  packages: string[]
+): Promise<string | undefined> {
+  const cacheEnabled = core.getBooleanInput('cache')
+  if (!cacheEnabled) {
+    core.info('Cache is disabled')
+    return undefined
+  }
+
+  try {
+    const platform = process.platform
+    const arch = process.arch
+
+    // Create a hash of packages for cache key
+    const packagesHash = crypto
+      .createHash('sha256')
+      .update(packages.sort().join(','))
+      .digest('hex')
+      .substring(0, 8)
+
+    // Cache key includes platform, architecture, cmdline-tools version, and packages
+    const cacheKey = `setup-android-${platform}-${arch}-cmdlinetools-${cmdlineToolsVersion}-packages-${packagesHash}`
+    const cachePaths = [
+      path.join(ANDROID_SDK_ROOT, 'cmdline-tools'),
+      path.join(ANDROID_SDK_ROOT, 'platform-tools'),
+      path.join(ANDROID_SDK_ROOT, 'tools'),
+      path.join(ANDROID_SDK_ROOT, 'licenses'),
+      path.join(ANDROID_SDK_ROOT, 'platforms'),
+      path.join(ANDROID_SDK_ROOT, 'build-tools'),
+      path.join(ANDROID_SDK_ROOT, 'system-images'),
+      path.join(ANDROID_SDK_ROOT, 'extras')
+    ].filter(p => fs.existsSync(p))
+
+    core.info(`Attempting to restore cache with key: ${cacheKey}`)
+    const cacheHit = await cache.restoreCache(cachePaths, cacheKey)
+
+    if (cacheHit) {
+      core.info(`Cache restored from key: ${cacheHit}`)
+      return cacheKey
+    } else {
+      core.info('Cache not found')
+      return cacheKey
+    }
+  } catch (error) {
+    core.warning(`Failed to restore cache: ${error}`)
+    return undefined
+  }
+}
+
+async function saveCache(cacheKey: string | undefined): Promise<void> {
+  if (!cacheKey) {
+    return
+  }
+
+  const cacheEnabled = core.getBooleanInput('cache')
+  if (!cacheEnabled) {
+    return
+  }
+
+  try {
+    const cachePaths = [
+      path.join(ANDROID_SDK_ROOT, 'cmdline-tools'),
+      path.join(ANDROID_SDK_ROOT, 'platform-tools'),
+      path.join(ANDROID_SDK_ROOT, 'tools'),
+      path.join(ANDROID_SDK_ROOT, 'licenses'),
+      path.join(ANDROID_SDK_ROOT, 'platforms'),
+      path.join(ANDROID_SDK_ROOT, 'build-tools'),
+      path.join(ANDROID_SDK_ROOT, 'system-images'),
+      path.join(ANDROID_SDK_ROOT, 'extras')
+    ].filter(p => fs.existsSync(p))
+
+    core.info(`Saving cache with key: ${cacheKey}`)
+    await cache.saveCache(cachePaths, cacheKey)
+    core.info('Cache saved successfully')
+  } catch (error) {
+    core.warning(`Failed to save cache: ${error}`)
+  }
+}
+
 async function run(): Promise<void> {
   if ('win16' === process.env['ImageOS']) {
     if (-1 !== ANDROID_SDK_ROOT.indexOf(' ')) {
@@ -173,6 +255,9 @@ async function run(): Promise<void> {
     .filter(function (element, index, array) {
       return element
     })
+
+  // Try to restore cache before installing
+  const cacheKey = await restoreCache(VERSION_LONG, packages)
   for (const pkg of packages) {
     await callSdkManager(sdkManagerExe, pkg)
   }
@@ -187,6 +272,9 @@ async function run(): Promise<void> {
   core.debug('add matchers')
   // eslint-disable-next-line no-console
   console.log(`##[add-matcher]${path.join(__dirname, '..', 'matchers.json')}`)
+
+  // Save cache after installation
+  await saveCache(cacheKey)
 }
 
 run()
